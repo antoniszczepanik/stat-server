@@ -8,14 +8,14 @@ trivial. PRs are welcome.
 
 1. Run it on a target server:
 
-```console
+```sh
 # Poll CPU with frequency of 100ms, limit history to 60s
 $ ./stat-server -f 100 -l 60
 ```
 
 2. Request the data.
 
-```console
+```sh
 $ # Get all datapoints from last 300 ms.
 $ curl "http://localhost:2137?ms=300" | jq
 [
