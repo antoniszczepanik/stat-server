@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -13,14 +14,24 @@ import (
 )
 
 func main() {
-	mt, err := NewMetricTracker(100*time.Millisecond, time.Minute)
+	var port = flag.Int("p", 2137, "Port to listen on")
+	var freq = flag.Int("f", 100, "Frequency at which metrics will be stored, in milliseconds")
+	var limit = flag.Int("l", 60, "How much history will be persisted, in seconds")
+	flag.Parse()
+
+	mt, err := NewMetricTracker(
+		time.Duration(*freq)*time.Millisecond,
+		time.Duration(*limit)*time.Second,
+		GetCpuUsage,
+	)
 	if err != nil {
 		log.Fatalf("initialize metric tracker: %v\n", err)
 	}
+
 	http.HandleFunc("/", mt.handleMetricRequest)
-	port := ":8080"
-	log.Printf("listening on %s...", port)
-	log.Fatal(http.ListenAndServe(port, nil))
+	on := fmt.Sprintf(":%d", *port)
+	log.Printf("listening on %s...", on)
+	log.Fatal(http.ListenAndServe(on, nil))
 }
 
 type Value struct {
@@ -38,9 +49,23 @@ type MetricTracker struct {
 	head       int
 	size       int
 	freq       time.Duration
+
+	// getValue gets actual metric data at given point in time.
+	getValue func(time.Duration) (float64, error)
 }
 
-func NewMetricTracker(freq time.Duration, limit time.Duration) (*MetricTracker, error) {
+// GetCpuUsage is an example of getValue function. It needs to block
+// for interval duration.
+func GetCpuUsage(interval time.Duration) (float64, error) {
+	values, err := cpu.Percent(interval, false)
+	if err != nil {
+		return 0, err
+	}
+	return values[0], nil
+}
+
+func NewMetricTracker(freq time.Duration, limit time.Duration,
+	getValue func(time.Duration) (float64, error)) (*MetricTracker, error) {
 	if freq > limit {
 		return nil, errors.New("metric storage time limit needs to be larger than frequency of polling")
 	}
@@ -51,6 +76,7 @@ func NewMetricTracker(freq time.Duration, limit time.Duration) (*MetricTracker, 
 		hasWrapped: false,
 		size:       size,
 		freq:       freq,
+		getValue:   getValue,
 	}
 	go mt.Track()
 	return mt, nil
@@ -58,13 +84,13 @@ func NewMetricTracker(freq time.Duration, limit time.Duration) (*MetricTracker, 
 
 func (m *MetricTracker) Track() {
 	for {
-		value, err := cpu.Percent(m.freq, false)
+		value, err := m.getValue(m.freq)
 		if err != nil {
 			log.Fatalf("%v", err)
 		}
 		m.data[m.head] = Value{
 			Ts:  time.Now().UnixNano(),
-			Val: value[0],
+			Val: value,
 		}
 		if (m.head + 1) == m.size {
 			m.hasWrapped = true
@@ -73,6 +99,7 @@ func (m *MetricTracker) Track() {
 	}
 }
 
+// GetLast gets values for the most recent duration time.
 func (m *MetricTracker) GetLast(duration time.Duration) []Value {
 	result := []Value{}
 	if m.hasWrapped {
